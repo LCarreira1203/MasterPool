@@ -1,3 +1,6 @@
+import asyncio
+import os
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -279,9 +282,9 @@ async def post_init(app):
     await start_background_tasks(app)
 
 
-def main():
+def build_app():
     if not TELEGRAM_BOT_TOKEN:
-        raise ValueError("TELEGRAM_BOT_TOKEN não encontrado. Configure o arquivo .env")
+        raise ValueError("TELEGRAM_BOT_TOKEN não encontrado. Configure no Render Environment.")
 
     ensure_file()
 
@@ -311,8 +314,26 @@ def main():
     app.add_handler(CallbackQueryHandler(confirm_delpool, pattern="^del_"))
     app.add_handler(CallbackQueryHandler(execute_delpool, pattern="^(confirmdel_|cancel_del)"))
 
+    return app
+
+
+def main():
+    print("MasterPool iniciando...")
+
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    app = build_app()
+
     print("MasterPool rodando...")
-    app.run_polling()
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        close_loop=False,
+        stop_signals=None,
+    )
 
 
 if __name__ == "__main__":
