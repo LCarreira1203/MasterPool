@@ -1,6 +1,8 @@
 import asyncio
 import os
+import threading
 
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -21,6 +23,18 @@ from utils.messages import WELCOME_MESSAGE, HELP_MESSAGE
 
 
 DEX, PAIR, VALUE, RANGE_MIN, RANGE_MAX = range(5)
+
+web_app = Flask(__name__)
+
+
+@web_app.route("/")
+def home():
+    return "MasterPool online ✅"
+
+
+@web_app.route("/health")
+def health():
+    return "OK ✅"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -282,7 +296,7 @@ async def post_init(app):
     await start_background_tasks(app)
 
 
-def build_app():
+def build_bot():
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN não encontrado. Configure no Render Environment.")
 
@@ -317,23 +331,33 @@ def build_app():
     return app
 
 
-def main():
-    print("MasterPool iniciando...")
+def run_bot():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    bot = build_bot()
 
-    app = build_app()
-
-    print("MasterPool rodando...")
-    app.run_polling(
+    print("MasterPool Telegram Bot rodando...")
+    bot.run_polling(
         allowed_updates=Update.ALL_TYPES,
         close_loop=False,
         stop_signals=None,
     )
+
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    print(f"Servidor web do MasterPool rodando na porta {port}...")
+    web_app.run(host="0.0.0.0", port=port)
+
+
+def main():
+    print("MasterPool iniciando...")
+
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+
+    run_web()
 
 
 if __name__ == "__main__":
