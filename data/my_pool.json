@@ -1,0 +1,10 @@
+{
+  "pair": "SOL/USDC",
+  "dex": "Orca",
+  "network": "Solana",
+  "status": "Rodando",
+  "range_min": 85,
+  "range_max": 105,
+  "amount_invested_usd": 0,
+  "current_value_usd": 0
+}
