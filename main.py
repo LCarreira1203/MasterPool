@@ -1,22 +1,19 @@
 import asyncio
+
+MASTERPOOL_MAIN_VERSION = "1.2-status-preco-token"
 import os
 import threading
+from datetime import datetime
 
 from flask import Flask
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from config import TELEGRAM_BOT_TOKEN
-from services.daily_report import build_daily_report
 from services.market_prices import get_token_price
 from services.pool_manager import add, delete, get_all, ensure_file
 from services.scheduler import start_background_tasks
 from utils.messages import WELCOME_MESSAGE, HELP_MESSAGE
-
 
 web_app = Flask(__name__)
 
@@ -29,6 +26,125 @@ def home():
 @web_app.route("/health")
 def health():
     return "OK ✅"
+
+
+def money(value):
+    try:
+        return f"US$ {float(value):,.2f}"
+    except Exception:
+        return "Indisponível"
+
+
+def percent(value):
+    try:
+        return f"{float(value):.2f}%"
+    except Exception:
+        return "Indisponível"
+
+
+def build_masterpool_report():
+    """
+    Relatório do /status e /bomdia.
+    Correção principal:
+    o preço monitorado vem do token da pool, exemplo SOL,
+    usando a mesma função do /search.
+    Assim /search SOL e /status mostram o mesmo preço.
+    """
+    ensure_file()
+    pools = get_all()
+
+    if not pools:
+        return "Nenhuma pool cadastrada.\n\nUse:\n/addpool Orca SOL/USDC 1000 80 120"
+
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    msg = f"📊 RELATÓRIO MASTERPOOL\n🕒 {now}\n\n"
+
+    for pool in pools:
+        pool_id = pool.get("id", "?")
+        dex = pool.get("dex", "-")
+        pair = pool.get("pair", "-").upper()
+        symbol = pool.get("symbol") or pair.split("/")[0]
+
+        try:
+            amount = float(pool.get("amount_invested", 0))
+            range_min = float(pool.get("range_min", 0))
+            range_max = float(pool.get("range_max", 0))
+        except Exception:
+            amount = 0.0
+            range_min = 0.0
+            range_max = 0.0
+
+        price_data = get_token_price(symbol)
+        price = price_data.get("price_usd")
+        price_brl = price_data.get("price_brl")
+        change_24h = price_data.get("change_24h", 0)
+        source = price_data.get("source", "-")
+
+        msg += (
+            f"🏦 POOL #{pool_id}\n"
+            f"DEX: {dex}\n"
+            f"Par: {pair}\n"
+            f"Token monitorado: {symbol}\n\n"
+        )
+
+        if price is None:
+            msg += (
+                "💰 Preço monitorado:\n"
+                "Indisponível\n"
+                f"📊 Fonte: {source}\n\n"
+                f"Valor aplicado: {money(amount)}\n\n"
+                "📍 RANGE\n"
+                f"Menor: {money(range_min)}\n"
+                f"Maior: {money(range_max)}\n\n"
+                "⚠️ Não consegui analisar o range agora.\n"
+                "━━━━━━━━━━━━━━\n\n"
+            )
+            continue
+
+        price = float(price)
+        msg += "💰 Preço monitorado:\n"
+        msg += f"{money(price)}\n"
+        if price_brl is not None:
+            msg += f"R$ {float(price_brl):,.2f}\n"
+        msg += f"📈 Variação 24h: {change_24h}%\n"
+        msg += f"📊 Fonte: {source}\n\n"
+        msg += f"Valor aplicado: {money(amount)}\n\n"
+        msg += "📍 RANGE\n"
+        msg += f"Menor: {money(range_min)}\n"
+        msg += f"Maior: {money(range_max)}\n\n"
+
+        if range_min <= price <= range_max:
+            dist_inf = ((price - range_min) / range_min) * 100 if range_min else 0
+            dist_sup = ((range_max - price) / price) * 100 if price else 0
+
+            if dist_inf <= 5:
+                situacao = "🟡 Dentro do range, perto do limite inferior"
+            elif dist_sup <= 5:
+                situacao = "🟡 Dentro do range, perto do limite superior"
+            else:
+                situacao = "🟢 Dentro do range"
+
+            msg += (
+                f"📊 Situação: {situacao}\n"
+                f"📉 Distância inferior: {percent(dist_inf)}\n"
+                f"📈 Distância superior: {percent(dist_sup)}\n"
+            )
+        elif price < range_min:
+            diff = ((range_min - price) / range_min) * 100 if range_min else 0
+            msg += (
+                "🚨 Situação: Fora do range abaixo do limite\n"
+                f"📉 Abaixo do mínimo em: {percent(diff)}\n"
+            )
+        else:
+            diff = ((price - range_max) / range_max) * 100 if range_max else 0
+            msg += (
+                "🚨 Situação: Fora do range acima do limite\n"
+                f"📈 Acima do máximo em: {percent(diff)}\n"
+            )
+
+        msg += "━━━━━━━━━━━━━━\n\n"
+
+    return msg.strip()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -44,11 +160,11 @@ async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def bomdia(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(build_daily_report())
+    await update.message.reply_text(build_masterpool_report())
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(build_daily_report())
+    await update.message.reply_text(build_masterpool_report())
 
 
 async def listpools(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -75,8 +191,7 @@ async def listpools(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def addpool(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Formato:
-    # /addpool Orca SOL/USDC 1000 80 120
+    # Formato: /addpool Orca SOL/USDC 1000 80 120
     args = context.args
 
     if len(args) != 5:
@@ -135,8 +250,7 @@ async def addpool(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def delpool(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Formato:
-    # /delpool 1
+    # Formato: /delpool 1
     args = context.args
 
     if len(args) != 1:
@@ -196,9 +310,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price_data = get_token_price(symbol)
 
     if price_data["price_usd"] is None:
-        await update.message.reply_text(
-            f"Não consegui buscar o preço real de {symbol} agora."
-        )
+        await update.message.reply_text(f"Não consegui buscar o preço real de {symbol} agora.")
         return
 
     msg = (
