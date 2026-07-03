@@ -3,15 +3,11 @@ import os
 import threading
 
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
-    ConversationHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
 )
 
 from config import TELEGRAM_BOT_TOKEN
@@ -21,8 +17,6 @@ from services.pool_manager import add, delete, get_all, ensure_file
 from services.scheduler import start_background_tasks
 from utils.messages import WELCOME_MESSAGE, HELP_MESSAGE
 
-
-DEX, PAIR, VALUE, RANGE_MIN, RANGE_MAX = range(5)
 
 web_app = Flask(__name__)
 
@@ -64,7 +58,7 @@ async def listpools(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Nenhuma pool cadastrada.")
         return
 
-    msg = "🏦 POOLS CADASTRADAS\n\n"
+    msg = "📋 POOLS CADASTRADAS\n\n"
 
     for pool in pools:
         msg += (
@@ -73,7 +67,7 @@ async def listpools(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Par: {pool['pair']}\n"
             f"Token monitorado: {pool.get('symbol', pool['pair'].split('/')[0])}\n"
             f"Valor aplicado: US$ {float(pool['amount_invested']):,.2f}\n"
-            f"Range: US$ {pool['range_min']} → US$ {pool['range_max']}\n"
+            f"Range: US$ {float(pool['range_min']):,.2f} → US$ {float(pool['range_max']):,.2f}\n"
             f"━━━━━━━━━━━━━━\n"
         )
 
@@ -81,167 +75,100 @@ async def listpools(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def addpool(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("Orca", callback_data="dex_Orca")],
-        [InlineKeyboardButton("Raydium", callback_data="dex_Raydium")],
-        [InlineKeyboardButton("Meteora", callback_data="dex_Meteora")],
-    ]
+    # Formato:
+    # /addpool Orca SOL/USDC 1000 80 120
+    args = context.args
 
-    await update.message.reply_text(
-        "🏦 Vamos cadastrar uma nova pool.\n\nDex:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
+    if len(args) != 5:
+        await update.message.reply_text(
+            "Use assim:\n\n"
+            "/addpool Orca SOL/USDC 1000 80 120\n\n"
+            "Formato:\n"
+            "/addpool DEX PAR VALOR RANGE_MIN RANGE_MAX"
+        )
+        return
 
-    return DEX
-
-
-async def choose_dex(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    dex = query.data.replace("dex_", "")
-    context.user_data["new_pool"] = {"dex": dex}
-
-    await query.edit_message_text(
-        f"Dex: {dex}\n\nAgora envie o par:\nExemplo: SOL/USDC"
-    )
-
-    return PAIR
-
-
-async def receive_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pair = update.message.text.upper().strip()
+    dex = args[0].strip().capitalize()
+    pair = args[1].upper().strip()
 
     if "/" not in pair:
-        await update.message.reply_text("Digite o par nesse formato: SOL/USDC")
-        return PAIR
+        await update.message.reply_text("O par precisa estar nesse formato: SOL/USDC")
+        return
+
+    try:
+        amount_invested = float(args[2].replace(",", "."))
+        range_min = float(args[3].replace(",", "."))
+        range_max = float(args[4].replace(",", "."))
+    except ValueError:
+        await update.message.reply_text(
+            "Valor e ranges precisam ser números.\n\n"
+            "Exemplo:\n/addpool Orca SOL/USDC 1000 80 120"
+        )
+        return
+
+    if range_min >= range_max:
+        await update.message.reply_text("O range mínimo precisa ser menor que o range máximo.")
+        return
 
     symbol = pair.split("/")[0].strip()
 
-    context.user_data["new_pool"]["pair"] = pair
-    context.user_data["new_pool"]["symbol"] = symbol
-
-    await update.message.reply_text("Valor aplicado em dólar?\nExemplo: 1000")
-
-    return VALUE
-
-
-async def receive_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        value = float(update.message.text.replace(",", "."))
-    except ValueError:
-        await update.message.reply_text("Digite apenas número. Exemplo: 1000")
-        return VALUE
-
-    context.user_data["new_pool"]["amount_invested"] = value
-
-    await update.message.reply_text("Range menor em dólar?\nExemplo: 85")
-
-    return RANGE_MIN
-
-
-async def receive_range_min(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        rmin = float(update.message.text.replace(",", "."))
-    except ValueError:
-        await update.message.reply_text("Digite apenas número. Exemplo: 85")
-        return RANGE_MIN
-
-    context.user_data["new_pool"]["range_min"] = rmin
-
-    await update.message.reply_text("Range maior em dólar?\nExemplo: 105")
-
-    return RANGE_MAX
-
-
-async def receive_range_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        rmax = float(update.message.text.replace(",", "."))
-    except ValueError:
-        await update.message.reply_text("Digite apenas número. Exemplo: 105")
-        return RANGE_MAX
-
-    pool = context.user_data["new_pool"]
-    pool["range_max"] = rmax
-    pool["active"] = True
+    pool = {
+        "dex": dex,
+        "pair": pair,
+        "symbol": symbol,
+        "amount_invested": amount_invested,
+        "range_min": range_min,
+        "range_max": range_max,
+        "active": True,
+    }
 
     add(pool)
 
     await update.message.reply_text(
-        f"✅ Pool cadastrada!\n\n"
-        f"DEX: {pool['dex']}\n"
-        f"Par: {pool['pair']}\n"
-        f"Token monitorado: {pool['symbol']}\n"
-        f"Valor aplicado: US$ {float(pool['amount_invested']):,.2f}\n"
-        f"Range: US$ {pool['range_min']} → US$ {pool['range_max']}"
+        "✅ Pool cadastrada!\n\n"
+        f"DEX: {dex}\n"
+        f"Par: {pair}\n"
+        f"Token monitorado: {symbol}\n"
+        f"Valor aplicado: US$ {amount_invested:,.2f}\n"
+        f"Range: US$ {range_min:,.2f} → US$ {range_max:,.2f}"
     )
-
-    return ConversationHandler.END
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Cadastro cancelado.")
-    return ConversationHandler.END
 
 
 async def delpool(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pools = get_all()
+    # Formato:
+    # /delpool 1
+    args = context.args
 
-    if not pools:
-        await update.message.reply_text("Nenhuma pool cadastrada para excluir.")
+    if len(args) != 1:
+        pools = get_all()
+
+        if not pools:
+            await update.message.reply_text("Nenhuma pool cadastrada para excluir.")
+            return
+
+        msg = "Para excluir, use:\n\n/delpool ID\n\nPools:\n"
+        for pool in pools:
+            msg += f"ID {pool['id']} - {pool['pair']} • {pool['dex']}\n"
+
+        await update.message.reply_text(msg)
         return
 
-    keyboard = []
-
-    for pool in pools:
-        text = f"{pool['pair']} • {pool['dex']}"
-        keyboard.append([InlineKeyboardButton(text, callback_data=f"del_{pool['id']}")])
-
-    await update.message.reply_text(
-        "Qual pool deseja excluir?",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-
-
-async def confirm_delpool(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    pool_id = int(query.data.replace("del_", ""))
+    try:
+        pool_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("O ID precisa ser um número. Exemplo: /delpool 1")
+        return
 
     pools = get_all()
     pool = next((p for p in pools if int(p["id"]) == pool_id), None)
 
     if not pool:
-        await query.edit_message_text("Pool não encontrada.")
+        await update.message.reply_text("Pool não encontrada.")
         return
-
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Sim, excluir", callback_data=f"confirmdel_{pool_id}"),
-            InlineKeyboardButton("❌ Cancelar", callback_data="cancel_del"),
-        ]
-    ]
-
-    await query.edit_message_text(
-        f"⚠️ Excluir esta pool?\n\n{pool['pair']} • {pool['dex']}",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-
-
-async def execute_delpool(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "cancel_del":
-        await query.edit_message_text("Exclusão cancelada.")
-        return
-
-    pool_id = int(query.data.replace("confirmdel_", ""))
 
     delete(pool_id)
 
-    await query.edit_message_text("✅ Pool excluída com sucesso.")
+    await update.message.reply_text(f"✅ Pool excluída: {pool['pair']} • {pool['dex']}")
 
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -304,19 +231,6 @@ def build_bot():
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
-    addpool_handler = ConversationHandler(
-        entry_points=[CommandHandler("addpool", addpool)],
-        states={
-            DEX: [CallbackQueryHandler(choose_dex, pattern="^dex_")],
-            PAIR: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_pair)],
-            VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_value)],
-            RANGE_MIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_range_min)],
-            RANGE_MAX: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_range_max)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
-    app.add_handler(addpool_handler)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("id", id_command))
@@ -324,9 +238,8 @@ def build_bot():
     app.add_handler(CommandHandler("bomdia", bomdia))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("listpools", listpools))
+    app.add_handler(CommandHandler("addpool", addpool))
     app.add_handler(CommandHandler("delpool", delpool))
-    app.add_handler(CallbackQueryHandler(confirm_delpool, pattern="^del_"))
-    app.add_handler(CallbackQueryHandler(execute_delpool, pattern="^(confirmdel_|cancel_del)"))
 
     return app
 
