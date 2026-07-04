@@ -1,9 +1,31 @@
 import requests
 
-from config import BINANCE_PRICE_URL, BINANCE_24H_URL
+from config import COINGECKO_SIMPLE_PRICE_URL
 
 
 STABLES = {"USDT", "USDC", "USD", "BUSD", "DAI"}
+
+COINGECKO_IDS = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "SOL": "solana",
+    "USDC": "usd-coin",
+    "USDT": "tether",
+    "BNB": "binancecoin",
+    "JUP": "jupiter-exchange-solana",
+    "BONK": "bonk",
+    "RAY": "raydium",
+    "ORCA": "orca",
+    "MATIC": "matic-network",
+    "POL": "polygon-ecosystem-token",
+    "LINK": "chainlink",
+    "UNI": "uniswap",
+    "AVAX": "avalanche-2",
+    "ADA": "cardano",
+    "XRP": "ripple",
+    "DOGE": "dogecoin",
+    "PEPE": "pepe",
+}
 
 
 def safe_float(value, default=None):
@@ -13,115 +35,91 @@ def safe_float(value, default=None):
         return default
 
 
-def get_usd_brl():
-    """
-    Busca cotação USDT/BRL na Binance.
-    """
-    try:
-        response = requests.get(
-            BINANCE_PRICE_URL,
-            params={"symbol": "USDTBRL"},
-            timeout=10,
-        )
-        response.raise_for_status()
-        price = safe_float(response.json().get("price"))
-        if price:
-            return price
-    except requests.RequestException:
-        pass
-
-    return None
-
-
-def get_binance_price(symbol):
-    """
-    Fonte única do MasterPool.
-    Busca somente na Binance, nesta ordem:
-    TOKENUSDT, TOKENUSDC, TOKENBUSD.
-    """
+def get_coingecko_price(symbol):
     symbol = symbol.upper().strip()
 
-    if symbol in {"USDT", "USDC", "USD"}:
-        return 1.0, 0
+    if symbol in {"USD", "USDT", "USDC"}:
+        return {
+            "symbol": symbol,
+            "price_usd": 1.0,
+            "price_brl": None,
+            "change_24h": 0,
+            "source": "Stablecoin",
+            "error": None,
+        }
 
-    for quote in ["USDT", "USDC", "BUSD"]:
-        pair_symbol = f"{symbol}{quote}"
+    coin_id = COINGECKO_IDS.get(symbol)
 
-        try:
-            price_response = requests.get(
-                BINANCE_PRICE_URL,
-                params={"symbol": pair_symbol},
-                timeout=10,
-            )
-
-            if price_response.status_code != 200:
-                continue
-
-            price_response.raise_for_status()
-            price = safe_float(price_response.json().get("price"))
-
-            if price is None:
-                continue
-
-            change_24h = 0
-            try:
-                change_response = requests.get(
-                    BINANCE_24H_URL,
-                    params={"symbol": pair_symbol},
-                    timeout=10,
-                )
-
-                if change_response.status_code == 200:
-                    change_24h = safe_float(
-                        change_response.json().get("priceChangePercent"),
-                        0,
-                    )
-            except requests.RequestException:
-                change_24h = 0
-
-            return price, change_24h
-
-        except requests.RequestException:
-            continue
-
-    return None, None
-
-
-def get_token_price(symbol):
-    """
-    Retorna preço somente pela Binance.
-    Se a Binance não encontrar, retorna erro controlado.
-    Nunca usa DexScreener nesta versão.
-    """
-    symbol = symbol.upper().strip()
-
-    price_usd, change_24h = get_binance_price(symbol)
-
-    if price_usd is None:
+    if not coin_id:
         return {
             "symbol": symbol,
             "price_usd": None,
             "price_brl": None,
             "change_24h": None,
-            "source": "Binance",
-            "error": f"Não encontrei {symbol} na Binance. Confira o símbolo ou use outro token.",
+            "source": "CoinGecko",
+            "error": f"Não encontrei {symbol} no CoinGecko.",
         }
 
-    usd_brl = get_usd_brl()
-    price_brl = price_usd * usd_brl if usd_brl else None
+    try:
+        response = requests.get(
+            COINGECKO_SIMPLE_PRICE_URL,
+            params={
+                "ids": coin_id,
+                "vs_currencies": "usd,brl",
+                "include_24hr_change": "true",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json().get(coin_id, {})
 
-    return {
-        "symbol": symbol,
-        "price_usd": price_usd,
-        "price_brl": price_brl,
-        "change_24h": change_24h,
-        "source": "Binance",
-        "error": None,
-    }
+        price_usd = safe_float(data.get("usd"))
+        price_brl = safe_float(data.get("brl"))
+        change_24h = safe_float(data.get("usd_24h_change"), 0)
+
+        if price_usd is None:
+            return {
+                "symbol": symbol,
+                "price_usd": None,
+                "price_brl": None,
+                "change_24h": None,
+                "source": "CoinGecko",
+                "error": f"CoinGecko não retornou preço para {symbol}.",
+            }
+
+        return {
+            "symbol": symbol,
+            "price_usd": price_usd,
+            "price_brl": price_brl,
+            "change_24h": change_24h,
+            "source": "CoinGecko",
+            "error": None,
+        }
+
+    except requests.RequestException:
+        return {
+            "symbol": symbol,
+            "price_usd": None,
+            "price_brl": None,
+            "change_24h": None,
+            "source": "CoinGecko",
+            "error": f"Falha ao consultar {symbol} no CoinGecko.",
+        }
+
+
+def get_token_price(symbol):
+    """
+    Fonte única de preço do MasterPool.
+
+    Usa CoinGecko como fonte principal e remove DexScreener/Binance,
+    evitando preço torto ou bloqueio por região no Render.
+    """
+    return get_coingecko_price(symbol)
 
 
 def get_symbols_from_pair(pair):
-    return [p.strip().upper() for p in pair.split("/") if p.strip()]
+    parts = [p.strip().upper() for p in pair.split("/") if p.strip()]
+    return parts
 
 
 def get_unique_symbols_from_pools(pools):
@@ -129,14 +127,15 @@ def get_unique_symbols_from_pools(pools):
 
     for pool in pools:
         symbol = pool.get("symbol")
+
         if symbol:
             symbol = symbol.upper().strip()
             if symbol and symbol not in symbols:
                 symbols.append(symbol)
             continue
 
-        for symbol in get_symbols_from_pair(pool.get("pair", "")):
-            if symbol and symbol not in STABLES and symbol not in symbols:
-                symbols.append(symbol)
+        for item in get_symbols_from_pair(pool.get("pair", "")):
+            if item and item not in STABLES and item not in symbols:
+                symbols.append(item)
 
     return symbols
