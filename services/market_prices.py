@@ -14,6 +14,9 @@ def safe_float(value, default=None):
 
 
 def get_usd_brl():
+    """
+    Busca cotação USDT/BRL na Binance.
+    """
     try:
         response = requests.get(
             BINANCE_PRICE_URL,
@@ -31,6 +34,11 @@ def get_usd_brl():
 
 
 def get_binance_price(symbol):
+    """
+    Fonte única do MasterPool.
+    Busca somente na Binance, nesta ordem:
+    TOKENUSDT, TOKENUSDC, TOKENBUSD.
+    """
     symbol = symbol.upper().strip()
 
     if symbol in {"USDT", "USDC", "USD"}:
@@ -62,6 +70,7 @@ def get_binance_price(symbol):
                     params={"symbol": pair_symbol},
                     timeout=10,
                 )
+
                 if change_response.status_code == 200:
                     change_24h = safe_float(
                         change_response.json().get("priceChangePercent"),
@@ -79,6 +88,11 @@ def get_binance_price(symbol):
 
 
 def get_token_price(symbol):
+    """
+    Retorna preço somente pela Binance.
+    Se a Binance não encontrar, retorna erro controlado.
+    Nunca usa DexScreener nesta versão.
+    """
     symbol = symbol.upper().strip()
 
     price_usd, change_24h = get_binance_price(symbol)
@@ -90,7 +104,7 @@ def get_token_price(symbol):
             "price_brl": None,
             "change_24h": None,
             "source": "Binance",
-            "error": f"Não encontrei {symbol} na Binance. Tente outro token ou confira o símbolo.",
+            "error": f"Não encontrei {symbol} na Binance. Confira o símbolo ou use outro token.",
         }
 
     usd_brl = get_usd_brl()
@@ -107,8 +121,7 @@ def get_token_price(symbol):
 
 
 def get_symbols_from_pair(pair):
-    parts = [p.strip().upper() for p in pair.split("/") if p.strip()]
-    return parts
+    return [p.strip().upper() for p in pair.split("/") if p.strip()]
 
 
 def get_unique_symbols_from_pools(pools):
@@ -118,13 +131,12 @@ def get_unique_symbols_from_pools(pools):
         symbol = pool.get("symbol")
         if symbol:
             symbol = symbol.upper().strip()
-            if symbol not in symbols:
+            if symbol and symbol not in symbols:
                 symbols.append(symbol)
             continue
 
-        pair = pool.get("pair", "")
-        for item in get_symbols_from_pair(pair):
-            if item and item not in STABLES and item not in symbols:
-                symbols.append(item)
+        for symbol in get_symbols_from_pair(pool.get("pair", "")):
+            if symbol and symbol not in STABLES and symbol not in symbols:
+                symbols.append(symbol)
 
     return symbols

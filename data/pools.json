@@ -1,17 +1,3 @@
 {
-    "pools": [
-        {
-            "dex": "Orca",
-            "pair": "SOL/USDC",
-            "symbol": "SOL",
-            "amount_invested": 294.58,
-            "range_min": 64.99,
-            "range_max": 106.0,
-            "active": true,
-            "id": 1,
-            "alert_lower_sent": false,
-            "alert_upper_sent": false,
-            "out_of_range_sent": false
-        }
-    ]
+    "pools": []
 }

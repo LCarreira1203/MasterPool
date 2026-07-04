@@ -1,6 +1,4 @@
 import asyncio
-
-MASTERPOOL_MAIN_VERSION = "1.3-bot-main-thread"
 import os
 import threading
 from datetime import datetime
@@ -11,9 +9,12 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from config import TELEGRAM_BOT_TOKEN
 from services.market_prices import get_token_price
-from services.pool_manager import add, delete, get_all, ensure_file
+from services.pool_manager import add, delete, get_all, ensure_file, save_pools
 from services.scheduler import start_background_tasks
-from utils.messages import WELCOME_MESSAGE, HELP_MESSAGE
+from utils.messages import HELP_MESSAGE, WELCOME_MESSAGE
+
+
+MASTERPOOL_MAIN_VERSION = "1.4-binance-only"
 
 web_app = Flask(__name__)
 
@@ -35,6 +36,13 @@ def money(value):
         return "Indisponível"
 
 
+def money_brl(value):
+    try:
+        return f"R$ {float(value):,.2f}"
+    except Exception:
+        return "Indisponível"
+
+
 def percent(value):
     try:
         return f"{float(value):.2f}%"
@@ -42,14 +50,21 @@ def percent(value):
         return "Indisponível"
 
 
+def extract_symbol(text):
+    symbol = (
+        text.upper()
+        .replace("/", "")
+        .replace("-", "")
+        .replace(" ", "")
+        .replace("USDT", "")
+        .replace("USDC", "")
+        .replace("USD", "")
+        .strip()
+    )
+    return symbol
+
+
 def build_masterpool_report():
-    """
-    Relatório do /status e /bomdia.
-    Correção principal:
-    o preço monitorado vem do token da pool, exemplo SOL,
-    usando a mesma função do /search.
-    Assim /search SOL e /status mostram o mesmo preço.
-    """
     ensure_file()
     pools = get_all()
 
@@ -63,7 +78,7 @@ def build_masterpool_report():
         pool_id = pool.get("id", "?")
         dex = pool.get("dex", "-")
         pair = pool.get("pair", "-").upper()
-        symbol = pool.get("symbol") or pair.split("/")[0]
+        symbol = (pool.get("symbol") or pair.split("/")[0]).upper().strip()
 
         try:
             amount = float(pool.get("amount_invested", 0))
@@ -78,7 +93,8 @@ def build_masterpool_report():
         price = price_data.get("price_usd")
         price_brl = price_data.get("price_brl")
         change_24h = price_data.get("change_24h", 0)
-        source = price_data.get("source", "-")
+        source = price_data.get("source", "Binance")
+        error = price_data.get("error")
 
         msg += (
             f"🏦 POOL #{pool_id}\n"
@@ -91,7 +107,8 @@ def build_masterpool_report():
             msg += (
                 "💰 Preço monitorado:\n"
                 "Indisponível\n"
-                f"📊 Fonte: {source}\n\n"
+                f"📊 Fonte: {source}\n"
+                f"⚠️ {error or 'Não consegui buscar o preço agora.'}\n\n"
                 f"Valor aplicado: {money(amount)}\n\n"
                 "📍 RANGE\n"
                 f"Menor: {money(range_min)}\n"
@@ -102,20 +119,27 @@ def build_masterpool_report():
             continue
 
         price = float(price)
-        msg += "💰 Preço monitorado:\n"
-        msg += f"{money(price)}\n"
+
+        msg += (
+            "💰 Preço monitorado:\n"
+            f"{money(price)}\n"
+        )
+
         if price_brl is not None:
-            msg += f"R$ {float(price_brl):,.2f}\n"
-        msg += f"📈 Variação 24h: {change_24h}%\n"
-        msg += f"📊 Fonte: {source}\n\n"
-        msg += f"Valor aplicado: {money(amount)}\n\n"
-        msg += "📍 RANGE\n"
-        msg += f"Menor: {money(range_min)}\n"
-        msg += f"Maior: {money(range_max)}\n\n"
+            msg += f"{money_brl(price_brl)}\n"
+
+        msg += (
+            f"📈 Variação 24h: {change_24h}%\n"
+            f"📊 Fonte: {source}\n\n"
+            f"Valor aplicado: {money(amount)}\n\n"
+            "📍 RANGE\n"
+            f"Menor: {money(range_min)}\n"
+            f"Maior: {money(range_max)}\n\n"
+        )
 
         if range_min <= price <= range_max:
             dist_inf = ((price - range_min) / range_min) * 100 if range_min else 0
-            dist_sup = ((range_max - price) / price) * 100 if price else 0
+            dist_sup = ((range_max - price) / range_max) * 100 if range_max else 0
 
             if dist_inf <= 5:
                 situacao = "🟡 Dentro do range, perto do limite inferior"
@@ -147,11 +171,12 @@ def build_masterpool_report():
     return msg.strip()
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(WELCOME_MESSAGE)
-
 async def version(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(MASTERPOOL_MAIN_VERSION)
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(WELCOME_MESSAGE)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -187,14 +212,13 @@ async def listpools(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Token monitorado: {pool.get('symbol', pool['pair'].split('/')[0])}\n"
             f"Valor aplicado: US$ {float(pool['amount_invested']):,.2f}\n"
             f"Range: US$ {float(pool['range_min']):,.2f} → US$ {float(pool['range_max']):,.2f}\n"
-            f"━━━━━━━━━━━━━━\n"
+            "━━━━━━━━━━━━━━\n"
         )
 
     await update.message.reply_text(msg)
 
 
 async def addpool(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Formato: /addpool Orca SOL/USDC 1000 80 120
     args = context.args
 
     if len(args) != 5:
@@ -228,7 +252,7 @@ async def addpool(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("O range mínimo precisa ser menor que o range máximo.")
         return
 
-    symbol = pair.split("/")[0].strip()
+    symbol = pair.split("/")[0].strip().upper()
 
     pool = {
         "dex": dex,
@@ -253,7 +277,6 @@ async def addpool(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def delpool(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Formato: /delpool 1
     args = context.args
 
     if len(args) != 1:
@@ -288,23 +311,19 @@ async def delpool(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Pool excluída: {pool['pair']} • {pool['dex']}")
 
 
+async def clearpools(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    save_pools({"pools": []})
+    await update.message.reply_text("🧹 Todas as pools foram apagadas.")
+
+
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query_text = " ".join(context.args).upper().strip()
+    query_text = " ".join(context.args).strip()
 
     if not query_text:
         await update.message.reply_text("Digite a cripto. Exemplo: /search sol")
         return
 
-    symbol = (
-        query_text
-        .replace("/", "")
-        .replace("-", "")
-        .replace(" ", "")
-        .replace("USDT", "")
-        .replace("USDC", "")
-        .replace("USD", "")
-        .strip()
-    )
+    symbol = extract_symbol(query_text)
 
     if not symbol:
         await update.message.reply_text("Digite uma cripto válida. Exemplo: /search sol")
@@ -313,12 +332,15 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price_data = get_token_price(symbol)
 
     if price_data["price_usd"] is None:
-        await update.message.reply_text(f"Não consegui buscar o preço real de {symbol} agora.")
+        await update.message.reply_text(
+            f"⚠️ Não encontrei {symbol} na Binance.\n\n"
+            "Confira o símbolo ou tente outro token."
+        )
         return
 
     msg = (
         f"🪙 {symbol}\n\n"
-        f"💵 Preço agora:\n"
+        "💵 Preço agora:\n"
         f"US$ {price_data['price_usd']:,.2f}\n"
     )
 
@@ -328,7 +350,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += (
         f"\n📈 24h: {price_data['change_24h']}%\n"
         f"📊 Fonte: {price_data['source']}\n\n"
-        f"Valor de referência para transação no momento."
+        "Valor de referência para transação no momento."
     )
 
     await update.message.reply_text(msg)
@@ -346,8 +368,8 @@ def build_bot():
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
-    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("version", version))
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("id", id_command))
     app.add_handler(CommandHandler("search", search))
@@ -356,18 +378,9 @@ def build_bot():
     app.add_handler(CommandHandler("listpools", listpools))
     app.add_handler(CommandHandler("addpool", addpool))
     app.add_handler(CommandHandler("delpool", delpool))
+    app.add_handler(CommandHandler("clearpools", clearpools))
 
     return app
-
-
-def run_bot():
-    bot = build_bot()
-
-    print("MasterPool Telegram Bot rodando...")
-    bot.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        stop_signals=None,
-    )
 
 
 def run_web():
@@ -377,14 +390,18 @@ def run_web():
 
 
 def main():
-    print("MasterPool iniciando...")
+    print(f"MasterPool iniciando... versão {MASTERPOOL_MAIN_VERSION}")
 
-    # Render precisa de uma porta HTTP aberta.
-    # Rodamos o Flask em segundo plano e deixamos o Telegram no processo principal.
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
 
-    run_bot()
+    bot = build_bot()
+
+    print("MasterPool Telegram Bot rodando no processo principal...")
+    bot.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        stop_signals=None,
+    )
 
 
 if __name__ == "__main__":
