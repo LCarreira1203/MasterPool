@@ -1,6 +1,6 @@
 import asyncio
 
-MASTERPOOL_MAIN_VERSION = "1.2-status-preco-token"
+MASTERPOOL_MAIN_VERSION = "1.3-bot-main-thread"
 import os
 import threading
 from datetime import datetime
@@ -149,6 +149,9 @@ def build_masterpool_report():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(WELCOME_MESSAGE)
+
+async def version(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(MASTERPOOL_MAIN_VERSION)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -344,6 +347,7 @@ def build_bot():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("version", version))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("id", id_command))
     app.add_handler(CommandHandler("search", search))
@@ -357,15 +361,11 @@ def build_bot():
 
 
 def run_bot():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
     bot = build_bot()
 
     print("MasterPool Telegram Bot rodando...")
     bot.run_polling(
         allowed_updates=Update.ALL_TYPES,
-        close_loop=False,
         stop_signals=None,
     )
 
@@ -379,10 +379,12 @@ def run_web():
 def main():
     print("MasterPool iniciando...")
 
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    # Render precisa de uma porta HTTP aberta.
+    # Rodamos o Flask em segundo plano e deixamos o Telegram no processo principal.
+    web_thread = threading.Thread(target=run_web, daemon=True)
+    web_thread.start()
 
-    run_web()
+    run_bot()
 
 
 if __name__ == "__main__":
