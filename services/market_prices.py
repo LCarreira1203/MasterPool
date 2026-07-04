@@ -14,9 +14,6 @@ def safe_float(value, default=None):
 
 
 def get_usd_brl():
-    """
-    Busca cotação USDT/BRL na Binance.
-    """
     try:
         response = requests.get(
             BINANCE_PRICE_URL,
@@ -34,12 +31,6 @@ def get_usd_brl():
 
 
 def get_binance_price(symbol):
-    """
-    Busca preço na Binance usando pares contra USDT, USDC e BUSD.
-    Exemplo:
-    SOL -> SOLUSDT / SOLUSDC / SOLBUSD
-    BTC -> BTCUSDT / BTCUSDC / BTCBUSD
-    """
     symbol = symbol.upper().strip()
 
     if symbol in {"USDT", "USDC", "USD"}:
@@ -71,7 +62,6 @@ def get_binance_price(symbol):
                     params={"symbol": pair_symbol},
                     timeout=10,
                 )
-
                 if change_response.status_code == 200:
                     change_24h = safe_float(
                         change_response.json().get("priceChangePercent"),
@@ -89,12 +79,6 @@ def get_binance_price(symbol):
 
 
 def get_token_price(symbol):
-    """
-    Fonte única de preço do MasterPool.
-
-    Agora busca SOMENTE na Binance.
-    Se não encontrar o par, retorna erro controlado.
-    """
     symbol = symbol.upper().strip()
 
     price_usd, change_24h = get_binance_price(symbol)
@@ -132,7 +116,6 @@ def get_unique_symbols_from_pools(pools):
 
     for pool in pools:
         symbol = pool.get("symbol")
-
         if symbol:
             symbol = symbol.upper().strip()
             if symbol not in symbols:
